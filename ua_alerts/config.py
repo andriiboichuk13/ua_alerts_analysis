@@ -27,5 +27,22 @@ OFFICIAL_LEVELS = ["oblast", "raion"]
 REGIME_START = "2025-11-01 00:00+02:00"
 REGIME_END = "2026-09-04 00:00+03:00"
 
+# Forecasting setup: horizons in hours; rolling-origin backtest over the last TEST_DAYS before REGIME_END.
+HORIZONS = [1, 3, 6]
+TEST_DAYS = 35
+N_FOLDS = 4
+SLIDING_TRAIN_DAYS = 84  # 12 weeks; the sliding-window scheme trains only on this many days before each fold
+
+# Macro-regions for aggregated regional-state features (EDA: alerts propagate within the rear).
+MACRO_REGIONS = {
+    "west": ["Volynska oblast", "Rivnenska oblast", "Lvivska oblast", "Ternopilska oblast", "Khmelnytska oblast",
+             "Ivano-Frankivska oblast", "Zakarpatska oblast", "Chernivetska oblast"],
+    "center": ["Vinnytska oblast", "Zhytomyrska oblast", "Kyivska oblast", "Kyiv City", "Cherkaska oblast",
+               "Kirovohradska oblast", "Poltavska oblast"],
+    "south": ["Odeska oblast", "Mykolaivska oblast", "Khersonska oblast"],
+    "front": ["Chernihivska oblast", "Sumska oblast", "Kharkivska oblast", "Donetska oblast",
+              "Dnipropetrovska oblast", "Zaporizka oblast"],
+}
+
 # Permanent alerts not present in the datasets (see dataset README).
 PERMANENT_REGIONS = ["Luhanska oblast", "Crimea"]

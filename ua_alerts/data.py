@@ -51,19 +51,20 @@ def data_cutoff(df: pd.DataFrame) -> pd.Timestamp:
     return df["started_at"].max().floor("h")
 
 
-def hourly_grid(df: pd.DataFrame, end: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (coverage, starts), both indexed by hour (UTC, left-closed) with one column per region.
+def hourly_state(df: pd.DataFrame, end: pd.Timestamp | None = None) -> dict[str, pd.DataFrame]:
+    """Hourly per-region alert state, indexed by hour (UTC, left-closed), one column per region.
 
-    coverage: fraction of the hour during which the region had at least one active alert
-              (overlapping alerts, e.g. several raions, are unioned, not summed).
-    starts:   number of alerts that started in the hour.
+    coverage:   fraction of the hour during which the region had at least one active alert
+                (overlapping alerts, e.g. several raions, are unioned, not summed).
+    starts:     number of alerts that started in the hour.
+    active_end: 1 if an alert is active in the last minute of the hour, i.e. at the end of the hour.
     """
     start = df["started_at"].min().floor("h")
     end = end if end is not None else data_cutoff(df)
     n_min = int((end - start).total_seconds() // 60)
     hours = pd.date_range(start, end, freq="h", inclusive="left")
 
-    coverage, starts = {}, {}
+    coverage, starts, active_end = {}, {}, {}
     for region, g in df.groupby("region"):
         s = ((g["started_at"] - start).dt.total_seconds() // 60).astype(int).clip(0, n_min).to_numpy()
         e = ((g["finished_at"] - start).dt.total_seconds() // 60).astype(int).clip(0, n_min).to_numpy()
@@ -71,7 +72,16 @@ def hourly_grid(df: pd.DataFrame, end: pd.Timestamp | None = None) -> tuple[pd.D
         np.add.at(delta, s, 1)
         np.add.at(delta, e, -1)
         active = (np.cumsum(delta)[:n_min] > 0).astype(np.float32)
-        coverage[region] = active[: len(hours) * 60].reshape(len(hours), 60).mean(axis=1)
+        per_hour = active[: len(hours) * 60].reshape(len(hours), 60)
+        coverage[region] = per_hour.mean(axis=1)
+        active_end[region] = per_hour[:, -1]
         starts[region] = np.bincount(s[s < len(hours) * 60] // 60, minlength=len(hours))[: len(hours)]
 
-    return pd.DataFrame(coverage, index=hours), pd.DataFrame(starts, index=hours)
+    return {name: pd.DataFrame(d, index=hours)
+            for name, d in [("coverage", coverage), ("starts", starts), ("active_end", active_end)]}
+
+
+def hourly_grid(df: pd.DataFrame, end: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (coverage, starts) - see hourly_state."""
+    state = hourly_state(df, end)
+    return state["coverage"], state["starts"]
