@@ -6,7 +6,7 @@ target y_h = 1 if the region has any alert during hours t+1 .. t+h.
 import numpy as np
 import pandas as pd
 
-from ua_alerts import config
+from ua_alerts import config, text_features
 
 
 def _run_length(mask: pd.DataFrame) -> pd.DataFrame:
@@ -18,8 +18,10 @@ def _run_length(mask: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, index=mask.index, columns=mask.columns)
 
 
-def build_panel(state: dict[str, pd.DataFrame], horizons: list[int] = config.HORIZONS) -> pd.DataFrame:
-    """Long panel indexed by (time, region) with feature columns and target columns y_{h}."""
+def build_panel(state: dict[str, pd.DataFrame], horizons: list[int] = config.HORIZONS,
+                messages: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Long panel indexed by (time, region) with feature columns and target columns y_{h}.
+    messages: Air Force Telegram messages (id, time, text); adds TEXT_FEATURES if given."""
     cov, starts, active_end = state["coverage"], state["starts"], state["active_end"]
     any_alert = (cov > 0).astype(np.float32)
     regions = cov.columns
@@ -51,6 +53,15 @@ def build_panel(state: dict[str, pd.DataFrame], horizons: list[int] = config.HOR
         f[f"{name}_active"] = broadcast(active_end[cols].mean(axis=1))
         f[f"{name}_starts_3h"] = broadcast((starts[cols].rolling(3, min_periods=1).sum() > 0).sum(axis=1))
 
+    # Air Force messages published before the forecast time
+    if messages is not None:
+        text = text_features.hourly_text_state(messages, cov.index, regions)
+        f["tg_mentions_1h"] = text["mentions"]
+        f["tg_mentions_3h"] = text["mentions"].rolling(3, min_periods=1).sum()
+        for cat in text_features.CATEGORIES:
+            f[f"tg_{cat}_1h"] = broadcast(text["categories"][cat])
+            f[f"tg_{cat}_3h"] = broadcast(text["categories"][cat].rolling(3, min_periods=1).sum())
+
     # Targets: any alert in hours t+1 .. t+h
     for h in horizons:
         fwd = any_alert[::-1].rolling(h, min_periods=h).max()[::-1].shift(-1)
@@ -72,3 +83,6 @@ FEATURES = [
     *[f"{m}_active" for m in config.MACRO_REGIONS], *[f"{m}_starts_3h" for m in config.MACRO_REGIONS],
     "hour", "region_id",
 ]
+
+TEXT_FEATURES = ["tg_mentions_1h", "tg_mentions_3h",
+                 *[f"tg_{c}_{w}" for c in text_features.CATEGORIES for w in ("1h", "3h")]]

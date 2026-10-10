@@ -6,15 +6,13 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-from ua_alerts.features import FEATURES
-
-NUMERIC = [c for c in FEATURES if c not in ("hour", "region_id")]
-
+from ua_alerts.features import FEATURES, TEXT_FEATURES
 
 def _times(panel):
     return panel.index.get_level_values("time")
@@ -167,72 +165,79 @@ class ETSRate:
 
 
 # --- Feature-based models ---------------------------------------------------------------------------------------
-class LogisticAR:
+class FeatureModel:
+    """Base for models on the feature panel. features: column list (FEATURES, or FEATURES + TEXT_FEATURES);
+    the name gets the suffix ' + Air Force' when text features are used."""
+    base_name = ""
+    default_params: dict = {}
+
+    def __init__(self, features: list[str] = FEATURES, **params):
+        self.features = list(features)
+        self.params = {**self.default_params, **params}
+        self.name = self.base_name + (" + Air Force" if any(f.startswith("tg_") for f in self.features) else "")
+
+
+class LogisticAR(FeatureModel):
     """Logistic autoregression: lagged own state, regional state, hour of day and oblast."""
-    name = "logistic AR"
+    base_name = "logistic AR"
     default_params = {"C": 1.0}
 
-    def __init__(self, **params):
-        self.params = {**self.default_params, **params}
-
     def fit(self, train, h):
+        numeric = [c for c in self.features if c not in ("hour", "region_id")]
         pre = ColumnTransformer([
-            ("num", StandardScaler(), NUMERIC),
+            ("num", make_pipeline(SimpleImputer(strategy="constant", fill_value=0), StandardScaler()), numeric),
             ("cat", OneHotEncoder(handle_unknown="ignore"), ["hour", "region_id"]),
         ])
         self.model = make_pipeline(pre, LogisticRegression(C=self.params["C"], max_iter=3000))
-        self.model.fit(train[FEATURES], train[f"y_{h}"])
+        self.model.fit(train[self.features], train[f"y_{h}"])
         return self
 
     def predict(self, test):
-        return self.model.predict_proba(test[FEATURES])[:, 1]
+        return self.model.predict_proba(test[self.features])[:, 1]
 
 
 # Boosters: default_params are the pre-registered settings; tuned values come from ua_alerts.tuning
 # (time-based search on the validation folds) and override them.
-class LightGBM:
-    name = "LightGBM"
+class LightGBM(FeatureModel):
+    base_name = "LightGBM"
     default_params = {"n_estimators": 400, "learning_rate": 0.03, "num_leaves": 31, "min_child_samples": 200}
-
-    def __init__(self, **params):
-        self.params = {**self.default_params, **params}
 
     def fit(self, train, h):
         self.model = lgb.LGBMClassifier(
             **self.params, subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_lambda=1.0,
             verbose=-1, random_state=0,
         )
-        self.model.fit(train[FEATURES], train[f"y_{h}"], categorical_feature=["region_id"])
+        self.model.fit(train[self.features], train[f"y_{h}"], categorical_feature=["region_id"])
         return self
 
     def predict(self, test):
-        return self.model.predict_proba(test[FEATURES])[:, 1]
+        return self.model.predict_proba(test[self.features])[:, 1]
 
 
-class XGBoost:
-    name = "XGBoost"
+class XGBoost(FeatureModel):
+    base_name = "XGBoost"
     default_params = {"n_estimators": 400, "learning_rate": 0.03, "max_depth": 6, "min_child_weight": 20}
-
-    def __init__(self, **params):
-        self.params = {**self.default_params, **params}
 
     def fit(self, train, h):
         self.model = xgb.XGBClassifier(
             **self.params, subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0, tree_method="hist",
             enable_categorical=True, random_state=0, n_jobs=-1,
         )
-        self.model.fit(train[FEATURES], train[f"y_{h}"])
+        self.model.fit(train[self.features], train[f"y_{h}"])
         return self
 
     def predict(self, test):
-        return self.model.predict_proba(test[FEATURES])[:, 1]
+        return self.model.predict_proba(test[self.features])[:, 1]
 
 
-def all_models(indicator: pd.DataFrame, params: dict | None = None) -> list:
-    """All forecasters; params = {model name: hyperparameters} (e.g. tuned values) overrides the defaults."""
+def all_models(indicator: pd.DataFrame, params: dict | None = None, text: bool = True) -> list:
+    """All forecasters; params = {model name: hyperparameters} (e.g. tuned values) overrides the defaults.
+    text=True adds the feature-based models again with the Air Force Telegram features (same hyperparameters)."""
     params = params or {}
     cache = ETSCache(indicator)
-    return [Persistence(), HourOfDayRate(),
-            *[ETSRate(cache, s) for s in ETS_SPECS], ETSRate(cache, "auto"),
-            LogisticAR(**params.get("logistic AR", {})), LightGBM(**params.get("LightGBM", {})),
-            XGBoost(**params.get("XGBoost", {}))]
+    out = [Persistence(), HourOfDayRate(), *[ETSRate(cache, s) for s in ETS_SPECS], ETSRate(cache, "auto")]
+    for cls in (LogisticAR, LightGBM, XGBoost):
+        out.append(cls(**params.get(cls.base_name, {})))
+        if text:
+            out.append(cls(features=FEATURES + TEXT_FEATURES, **params.get(cls.base_name, {})))
+    return out

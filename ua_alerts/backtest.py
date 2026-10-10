@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
-from ua_alerts import config, data, features, models
+from ua_alerts import config, data, features, models, telegram
 
 PREDICTIONS = config.PROCESSED_DIR / "backtest_predictions.parquet"
 TUNED_PARAMS = config.ROOT / "reports" / "tuned_params.json"
@@ -47,8 +47,9 @@ def split(panel: pd.DataFrame, h: int, test_start: pd.Timestamp, test_end: pd.Ti
 
 
 def load_inputs():
+    """(panel with alert and Air Force text features, hourly 0/1 alert indicator)."""
     state = data.hourly_state(data.load_official(), end=data.regime_end())
-    return features.build_panel(state), (state["coverage"] > 0).astype(float)
+    return features.build_panel(state, messages=telegram.load("kpszsu")), (state["coverage"] > 0).astype(float)
 
 
 def load_tuned_params() -> dict:

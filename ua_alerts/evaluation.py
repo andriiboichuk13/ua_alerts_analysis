@@ -17,6 +17,8 @@ GROUP = {"persistence": "baseline", "hour-of-day rate": "baseline", "logistic AR
 
 
 def model_group(name: str) -> str:
+    if name.endswith(" + Air Force"):
+        return GROUP[name.removesuffix(" + Air Force")] + " + text"
     return GROUP.get(name, "ETS")
 
 
