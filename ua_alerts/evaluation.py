@@ -211,7 +211,7 @@ def plot_feature_importance(imp: pd.DataFrame, h: int) -> None:
 
 
 def plot_predictions(preds: pd.DataFrame, coverage: pd.DataFrame, regions: list[str], start: str, days: int = 7,
-                     h: int = 3, window: str = "expanding") -> None:
+                     h: int = 3, window: str = "expanding", name: str = "m08_predictions") -> None:
     """Forecasts over time vs actual alerts. Shaded: hours with an alert in the oblast.
     Lines: P(alert within the next h hours) issued at each hour (plotted at the forecast time T)."""
     p = _select(preds, h, window).reset_index()
@@ -234,7 +234,7 @@ def plot_predictions(preds: pd.DataFrame, coverage: pd.DataFrame, regions: list[
     fig.suptitle(f"P(alert within {h} h) vs actual alerts, {t0:%d %b} - {t1:%d %b %Y} (Kyiv time)",
                  x=0.01, ha="left", fontweight="bold", y=1.03)
     fig.tight_layout()
-    save(fig, f"m08_predictions_h{h}")
+    save(fig, f"{name}_h{h}")
 
 
 def season_table(board: pd.DataFrame, h: int, window: str = "expanding") -> pd.DataFrame:

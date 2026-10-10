@@ -16,7 +16,8 @@ from ua_alerts import backtest, config, data, features, models
 OUT_DIR = config.ROOT / "reports" / "forecasts"
 
 
-def forecast(at: str | None = None, panel: pd.DataFrame | None = None) -> pd.DataFrame:
+def forecast(at: str | None = None, panel: pd.DataFrame | None = None, feature_list: list[str] = features.FEATURES,
+             permanent: bool = True) -> pd.DataFrame:
     if panel is None:
         panel, _ = backtest.load_inputs()
     times = panel.index.get_level_values("time")
@@ -34,10 +35,10 @@ def forecast(at: str | None = None, panel: pd.DataFrame | None = None) -> pd.Dat
     for h in config.HORIZONS:
         train = panel[(times >= pd.Timestamp(config.REGIME_START)) & (times + pd.Timedelta(hours=h) < forecast_time)
                       & panel[f"y_{h}"].notna()]
-        model = models.XGBoost(**params).fit(train, h)
+        model = models.XGBoost(features=feature_list, **params).fit(train, h)
         out[f"p_{h}h"] = model.predict(panel.loc[[t]].reset_index("time", drop=True)
                                        .set_index(pd.MultiIndex.from_product([[t], rows.index], names=["time", "region"])))
-    for region in config.PERMANENT_REGIONS:
+    for region in config.PERMANENT_REGIONS if permanent else []:
         out.loc[region] = [1] + [1.0] * len(config.HORIZONS)
     out.index.name = "region"
     out.attrs["forecast_time"] = forecast_time

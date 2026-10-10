@@ -22,12 +22,12 @@ TUNED_PARAMS = config.ROOT / "reports" / "tuned_params.json"
 WINDOWS = {"expanding": None, "sliding": config.SLIDING_TRAIN_DAYS}
 
 
-def folds(fold_set: str = "test") -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """[start, end) of each fold in UTC."""
+def folds(fold_set: str = "test", end: pd.Timestamp | None = None) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[start, end) of each fold in UTC. end: end of the data for the test folds (default: the regime end)."""
     if fold_set == "validation":
         kyiv = lambda d: pd.Timestamp(d, tz=config.LOCAL_TZ).tz_convert("UTC")
         return [(kyiv(a), kyiv(b)) for a, b in config.VALIDATION_FOLDS]
-    end = data.regime_end()
+    end = end if end is not None else data.regime_end()
     edges = pd.date_range(end - pd.Timedelta(days=config.TEST_DAYS), end, periods=config.N_FOLDS + 1)
     return list(zip(edges[:-1], edges[1:]))
 
@@ -57,9 +57,9 @@ def load_tuned_params() -> dict:
 
 
 def run(fold_set: str, window: str, panel: pd.DataFrame, indicator: pd.DataFrame, model_list: list,
-        horizons: list[int] = config.HORIZONS, verbose: bool = True) -> pd.DataFrame:
+        horizons: list[int] = config.HORIZONS, verbose: bool = True, end: pd.Timestamp | None = None) -> pd.DataFrame:
     preds = []
-    for k, (start, end) in enumerate(folds(fold_set)):
+    for k, (start, end) in enumerate(folds(fold_set, end)):
         for h in horizons:
             train, test = split(panel, h, start, end, WINDOWS[window])
             out = test[[f"y_{h}"]].rename(columns={f"y_{h}": "y"}).assign(set=fold_set, window=window, h=h, fold=k)
