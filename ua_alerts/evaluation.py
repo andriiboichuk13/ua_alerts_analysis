@@ -21,36 +21,39 @@ def model_group(name: str) -> str:
 
 
 def plot_folds() -> None:
-    """Timeline of training and test windows for both window schemes."""
-    fig, ax = plt.subplots(figsize=(11, 3.2))
+    """Timeline of training and evaluation windows: validation folds (tuning) and test folds, both window schemes."""
+    fig, ax = plt.subplots(figsize=(11, 4.6))
     regime_start = pd.Timestamp(config.REGIME_START)
     y, ys, labels = 0.0, [], []
-    for window, days in backtest.WINDOWS.items():
-        for k, (start, end) in enumerate(backtest.folds()):
-            tr_start = regime_start if days is None else max(regime_start, start - pd.Timedelta(days=days))
-            ax.barh(y, start - tr_start, left=tr_start, color="#b7d3f6", height=0.6)
-            ax.barh(y, end - start, left=start, color=BLUE, height=0.6)
-            ys.append(y)
-            labels.append(f"{window} · fold {k + 1}")
-            y += 1
-        y += 0.5
-    ax.set_yticks(ys, labels)
+    for fold_set, color in (("validation", "#1baf7a"), ("test", BLUE)):
+        for window, days in backtest.WINDOWS.items():
+            for k, (start, end) in enumerate(backtest.folds(fold_set)):
+                tr_start = regime_start if days is None else max(regime_start, start - pd.Timedelta(days=days))
+                ax.barh(y, start - tr_start, left=tr_start, color="#d9e8fb", height=0.6)
+                ax.barh(y, end - start, left=start, color=color, height=0.6)
+                ys.append(y)
+                labels.append(f"{fold_set} · {window} · {k + 1}")
+                y += 1
+            y += 0.4
+        y += 0.6
+    ax.set_yticks(ys, labels, fontsize=8)
     ax.invert_yaxis()
-    ax.set_title("Rolling-origin backtest: training (light) and test (dark) windows")
+    ax.set_title("Training (light) and evaluation windows: validation (green) and test (blue)")
     ax.grid(axis="y", visible=False)
     save(fig, "m01_folds")
 
 
-def leaderboard_table(board: pd.DataFrame, h: int) -> pd.DataFrame:
-    t = board[board.h == h].pivot_table(index="model", columns="window",
+def leaderboard_table(board: pd.DataFrame, h: int, fold_set: str = "test") -> pd.DataFrame:
+    t = board[(board.h == h) & (board.set == fold_set)].pivot_table(index="model", columns="window",
                                         values=["brier", "brier_skill", "log_loss", "roc_auc", "roc_auc_mean_per_oblast"])
     t = t.sort_values(("brier", "expanding"))
     t.insert(0, "group", [model_group(m) for m in t.index])
     return t.round(4)
 
 
-def plot_skill_by_horizon(board: pd.DataFrame) -> None:
+def plot_skill_by_horizon(board: pd.DataFrame, fold_set: str = "test") -> None:
     """Brier skill vs the hour-of-day rate, per model, horizon and window scheme."""
+    board = board[board.set == fold_set]
     order = board[(board.h == 3) & (board.window == "expanding")].sort_values("brier_skill").model.tolist()
     fig, axes = plt.subplots(1, len(config.HORIZONS), figsize=(13, 4), sharey=True)
     for ax, h in zip(axes, config.HORIZONS):
@@ -68,8 +71,12 @@ def plot_skill_by_horizon(board: pd.DataFrame) -> None:
     save(fig, "m02_skill_by_horizon")
 
 
+def _select(preds: pd.DataFrame, h: int, window: str, fold_set: str = "test") -> pd.DataFrame:
+    return preds[(preds.h == h) & (preds.window == window) & (preds.set == fold_set)]
+
+
 def per_oblast(preds: pd.DataFrame, h: int, window: str) -> pd.DataFrame:
-    return backtest.summarize(preds[(preds.h == h) & (preds.window == window)], ["region"])
+    return backtest.summarize(_select(preds, h, window), ["region"])
 
 
 def plot_per_oblast(preds: pd.DataFrame, h: int, window: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -101,7 +108,7 @@ def plot_per_oblast(preds: pd.DataFrame, h: int, window: str) -> tuple[pd.DataFr
 
 def plot_roc(preds: pd.DataFrame, h: int, window: str) -> None:
     """ROC curves pooled and per macro-region for the main models."""
-    p = preds[(preds.h == h) & (preds.window == window)].reset_index()
+    p = _select(preds, h, window).reset_index()
     panels = {"all oblasts": p, **{k: p[p.region.isin(v)] for k, v in config.MACRO_REGIONS.items()}}
     fig, axes = plt.subplots(1, len(panels), figsize=(18, 3.9), sharey=True)
     for ax, (name, g) in zip(axes, panels.items()):
@@ -119,7 +126,7 @@ def plot_roc(preds: pd.DataFrame, h: int, window: str) -> None:
 
 
 def plot_calibration(preds: pd.DataFrame, h: int, window: str) -> None:
-    p = preds[(preds.h == h) & (preds.window == window)]
+    p = _select(preds, h, window)
     fig, ax = plt.subplots(figsize=(5.5, 5.5))
     ax.plot([0, 1], [0, 1], color=GRID, linewidth=1)
     for m, color in SERIES.items():
@@ -133,16 +140,24 @@ def plot_calibration(preds: pd.DataFrame, h: int, window: str) -> None:
 
 
 def plot_fold_stability(board_folds: pd.DataFrame, h: int, window: str) -> None:
-    b = board_folds[(board_folds.h == h) & (board_folds.window == window)]
-    fig, ax = plt.subplots(figsize=(9, 3.6))
+    """Brier skill vs hour-of-day rate per fold: 4 validation folds (Feb-Jun) and 4 test folds (Aug)."""
+    b = board_folds[(board_folds.h == h) & (board_folds.window == window)].copy()
+    ref = b[b.model == "hour-of-day rate"].set_index(["set", "fold"])["brier"]
+    b["skill"] = 1 - b["brier"] / b.set_index(["set", "fold"]).index.map(ref).to_numpy()
+    labels = [f"val {a[5:]}" for a, _ in config.VALIDATION_FOLDS] + \
+             [f"test {s:%m-%d}" for s, _ in backtest.folds("test")]
+    fig, ax = plt.subplots(figsize=(11, 4))
     for m, color in SERIES.items():
-        s = b[b.model == m].sort_values("fold")
-        ax.plot(s["fold"] + 1, s["brier"], color=color, marker="o", markersize=5, label=m)
-    ax.set_xticks(range(1, config.N_FOLDS + 1))
-    ax.set_xlabel("fold (test window)")
-    ax.set_ylabel("Brier score (lower is better)")
-    ax.set_title(f"Stability across folds, h = {h} h, {window}")
-    ax.legend(frameon=False, fontsize=8, ncol=5, loc="upper center", bbox_to_anchor=(0.5, -0.2))
+        if m == "hour-of-day rate":
+            continue
+        s = pd.concat([b[(b.model == m) & (b.set == "validation")].sort_values("fold"),
+                       b[(b.model == m) & (b.set == "test")].sort_values("fold")])
+        ax.plot(range(len(s)), s["skill"], color=color, marker="o", markersize=5, label=m)
+    ax.axvline(len(config.VALIDATION_FOLDS) - 0.5, color=INK2, linestyle=":", linewidth=0.8)
+    ax.set_xticks(range(len(labels)), labels)
+    ax.set_ylabel("Brier skill vs hour-of-day rate")
+    ax.set_title(f"Stability across seasons and folds, h = {h} h, {window} window")
+    ax.legend(frameon=False, fontsize=8, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
     save(fig, f"m06_folds_h{h}_{window}")
 
 
@@ -167,8 +182,9 @@ def feature_importance(panel: pd.DataFrame, h: int) -> pd.DataFrame:
     """Gain importance of both boosters fitted on the last expanding training window."""
     start, end = backtest.folds()[-1]
     train, _ = backtest.split(panel, h, start, end)
+    params = backtest.load_tuned_params()
     out = {}
-    for m in (models.LightGBM(), models.XGBoost()):
+    for m in (models.LightGBM(**params.get("LightGBM", {})), models.XGBoost(**params.get("XGBoost", {}))):
         m.fit(train, h)
         if m.name == "LightGBM":
             imp = pd.Series(m.model.booster_.feature_importance("gain"), index=m.model.feature_name_)
@@ -190,3 +206,52 @@ def plot_feature_importance(imp: pd.DataFrame, h: int) -> None:
     ax.legend(frameon=False)
     ax.grid(axis="y", visible=False)
     save(fig, f"m07_importance_h{h}")
+
+
+def plot_predictions(preds: pd.DataFrame, coverage: pd.DataFrame, regions: list[str], start: str, days: int = 7,
+                     h: int = 3, window: str = "expanding") -> None:
+    """Forecasts over time vs actual alerts. Shaded: hours with an alert in the oblast.
+    Lines: P(alert within the next h hours) issued at each hour (plotted at the forecast time T)."""
+    p = _select(preds, h, window).reset_index()
+    t0 = pd.Timestamp(start, tz=config.LOCAL_TZ)
+    t1 = t0 + pd.Timedelta(days=days)
+    fig, axes = plt.subplots(len(regions), 1, figsize=(13, 2.1 * len(regions)), sharex=True)
+    for ax, region in zip(axes, regions):
+        cov = coverage[region].tz_convert(config.LOCAL_TZ).loc[t0:t1]
+        ax.fill_between(cov.index, 0, (cov > 0).astype(float), step="post", color="#e4e3df", linewidth=0,
+                        label="alert active (actual)")
+        g = p[p.region == region].copy()
+        g["T"] = (g["time"] + pd.Timedelta(hours=1)).dt.tz_convert(config.LOCAL_TZ)
+        g = g[(g["T"] >= t0) & (g["T"] <= t1)].sort_values("T")
+        for m in ("hour-of-day rate", "logistic AR", "XGBoost"):
+            ax.plot(g["T"], g[m], color=SERIES[m], linewidth=1.3, label=m)
+        ax.set_ylim(-0.02, 1.02)
+        ax.set_ylabel("P", rotation=0)
+        ax.set_title(f"{short(region)} (test base rate {p[p.region == region]['y'].mean():.0%})", fontsize=10)
+    axes[0].legend(frameon=False, fontsize=8, ncol=4, loc="lower left", bbox_to_anchor=(0, 1.15))
+    fig.suptitle(f"P(alert within {h} h) vs actual alerts, {t0:%d %b} - {t1:%d %b %Y} (Kyiv time)",
+                 x=0.01, ha="left", fontweight="bold", y=1.03)
+    fig.tight_layout()
+    save(fig, f"m08_predictions_h{h}")
+
+
+def season_table(board: pd.DataFrame, h: int, window: str = "expanding") -> pd.DataFrame:
+    """Brier, Brier skill and mean per-oblast AUC per model on the validation set (Feb-Jun) and the test set (Aug)."""
+    b = board[(board.h == h) & (board.window == window)]
+    t = b.pivot_table(index="model", columns="set", values=["brier", "brier_skill", "roc_auc_mean_per_oblast"])
+    return t.sort_values(("brier", "test")).round(4)
+
+
+def onset_table(preds: pd.DataFrame, panel: pd.DataFrame, h: int, window: str = "expanding") -> pd.DataFrame:
+    """Metrics split by the state at the forecast moment. If an alert is active now, 'alert within h hours' is
+    almost always true (the current alert continues into the first target hour), so those rows are trivial;
+    rows that are quiet now measure the real task: will a NEW alert start within h hours?"""
+    p = preds[(preds.window == window) & (preds.h == h)].reset_index()
+    p["state"] = np.where(panel["active_now"].reindex(pd.MultiIndex.from_frame(p[["time", "region"]])).to_numpy() > 0,
+                          "alert now", "quiet now")
+    pooled = backtest.summarize(p, ["set", "state"])
+    per = backtest.summarize(p, ["set", "state", "region"]).groupby(["set", "state", "model"])["roc_auc"].mean()
+    pooled["roc_auc_mean_per_oblast"] = pooled.set_index(["set", "state", "model"]).index.map(per).to_numpy()
+    ref = pooled[pooled.model == "hour-of-day rate"].set_index(["set", "state"])["brier"]
+    pooled["brier_skill"] = 1 - pooled["brier"] / pooled.set_index(["set", "state"]).index.map(ref).to_numpy()
+    return pooled

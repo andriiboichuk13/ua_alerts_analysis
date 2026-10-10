@@ -31,6 +31,11 @@ REGIME_END = "2026-09-04 00:00+03:00"
 HORIZONS = [1, 3, 6]
 TEST_DAYS = 35
 N_FOLDS = 4
+# Validation folds (Kyiv dates, [start, end)) spread over winter-spring-summer, before the test period.
+# Used for hyperparameter tuning and for checking that the model ranking holds across seasons.
+VALIDATION_FOLDS = [("2026-02-01", "2026-02-15"), ("2026-03-15", "2026-03-29"),
+                    ("2026-04-26", "2026-05-10"), ("2026-06-07", "2026-06-21")]
+TUNING_HORIZON = 3
 SLIDING_TRAIN_DAYS = 84  # 12 weeks; the sliding-window scheme trains only on this many days before each fold
 
 # Macro-regions for aggregated regional-state features (EDA: alerts propagate within the rear).

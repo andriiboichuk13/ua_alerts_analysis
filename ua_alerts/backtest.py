@@ -1,11 +1,16 @@
-"""Rolling-origin backtest over the last TEST_DAYS before the regime end.
+"""Rolling-origin backtest.
 
-Two training-window schemes:
-  expanding - train on everything from REGIME_START up to the test fold;
-  sliding   - train only on the SLIDING_TRAIN_DAYS before the test fold (adapts faster to level shifts).
+Fold sets:
+  validation - VALIDATION_FOLDS spread over Feb-Jun 2026; used for hyperparameter tuning and seasonal robustness;
+  test       - the last TEST_DAYS before the regime end in N_FOLDS consecutive folds; used once, for final scores.
+Training-window schemes:
+  expanding - train on everything from REGIME_START up to the fold;
+  sliding   - train only on the SLIDING_TRAIN_DAYS before the fold (adapts faster to level shifts).
 
 Run: uv run python -m ua_alerts.backtest
 """
+import json
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
@@ -13,11 +18,15 @@ from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from ua_alerts import config, data, features, models
 
 PREDICTIONS = config.PROCESSED_DIR / "backtest_predictions.parquet"
+TUNED_PARAMS = config.ROOT / "reports" / "tuned_params.json"
 WINDOWS = {"expanding": None, "sliding": config.SLIDING_TRAIN_DAYS}
 
 
-def folds() -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """N_FOLDS consecutive test windows covering the last TEST_DAYS before the regime end (UTC)."""
+def folds(fold_set: str = "test") -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """[start, end) of each fold in UTC."""
+    if fold_set == "validation":
+        kyiv = lambda d: pd.Timestamp(d, tz=config.LOCAL_TZ).tz_convert("UTC")
+        return [(kyiv(a), kyiv(b)) for a, b in config.VALIDATION_FOLDS]
     end = data.regime_end()
     edges = pd.date_range(end - pd.Timedelta(days=config.TEST_DAYS), end, periods=config.N_FOLDS + 1)
     return list(zip(edges[:-1], edges[1:]))
@@ -42,36 +51,45 @@ def load_inputs():
     return features.build_panel(state), (state["coverage"] > 0).astype(float)
 
 
-def run(window: str, panel: pd.DataFrame, indicator: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-    model_list = models.all_models(indicator)
+def load_tuned_params() -> dict:
+    return json.loads(TUNED_PARAMS.read_text()) if TUNED_PARAMS.exists() else {}
+
+
+def run(fold_set: str, window: str, panel: pd.DataFrame, indicator: pd.DataFrame, model_list: list,
+        horizons: list[int] = config.HORIZONS, verbose: bool = True) -> pd.DataFrame:
     preds = []
-    for k, (start, end) in enumerate(folds()):
-        for h in config.HORIZONS:
+    for k, (start, end) in enumerate(folds(fold_set)):
+        for h in horizons:
             train, test = split(panel, h, start, end, WINDOWS[window])
-            out = test[[f"y_{h}"]].rename(columns={f"y_{h}": "y"}).assign(h=h, fold=k, window=window)
+            out = test[[f"y_{h}"]].rename(columns={f"y_{h}": "y"}).assign(set=fold_set, window=window, h=h, fold=k)
             for model in model_list:
                 out[model.name] = model.fit(train, h).predict(test)
             preds.append(out)
             if verbose:
-                print(f"{window:9s} fold={k} h={h} train={len(train):,} "
-                      f"[{train.index.get_level_values('time').min():%m-%d} ..] test={len(test):,} "
+                print(f"{fold_set:10s} {window:9s} fold={k} h={h} train={len(train):,} "
+                      f"[{train.index.get_level_values('time').min():%Y-%m-%d} ..] test={len(test):,} "
                       f"[{start:%m-%d %H:%M} .. {end:%m-%d %H:%M})")
     return pd.concat(preds)
 
 
 def run_all(rerun: bool = False) -> pd.DataFrame:
-    """Predictions for both window schemes; cached in data/processed."""
+    """Predictions of all models (tuned hyperparameters) for both fold sets and window schemes; cached."""
     if PREDICTIONS.exists() and not rerun:
         return pd.read_parquet(PREDICTIONS)
     panel, indicator = load_inputs()
-    preds = pd.concat([run(w, panel, indicator) for w in WINDOWS])
+    params = load_tuned_params()
+    preds = pd.concat([run(s, w, panel, indicator, models.all_models(indicator, params))
+                       for s in ("validation", "test") for w in WINDOWS])
     config.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     preds.to_parquet(PREDICTIONS)
     return preds
 
 
+META = ("y", "set", "window", "h", "fold", "time", "region", "state")
+
+
 def model_names(preds: pd.DataFrame) -> list[str]:
-    return [c for c in preds.columns if c not in ("y", "h", "fold", "window", "time", "region")]
+    return [c for c in preds.columns if c not in META]
 
 
 def metrics(y: np.ndarray, p: np.ndarray) -> dict:
@@ -95,21 +113,24 @@ def summarize(preds: pd.DataFrame, by: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def leaderboard(preds: pd.DataFrame) -> pd.DataFrame:
-    """Pooled metrics plus the mean of per-oblast ROC AUCs (pooled AUC is inflated by front-vs-rear differences)."""
-    pooled = summarize(preds, ["window", "h"])
-    per_oblast = summarize(preds, ["window", "h", "region"])
-    macro = per_oblast.groupby(["window", "h", "model"])["roc_auc"].mean().rename("roc_auc_mean_per_oblast")
-    out = pooled.merge(macro.reset_index(), on=["window", "h", "model"])
-    ref = out[out.model == "hour-of-day rate"].set_index(["window", "h"])["brier"]
-    out["brier_skill"] = 1 - out["brier"] / out.set_index(["window", "h"]).index.map(ref).to_numpy()
+def leaderboard(preds: pd.DataFrame, by: tuple[str, ...] = ("set", "window", "h")) -> pd.DataFrame:
+    """Pooled metrics plus the mean of per-oblast ROC AUCs (pooled AUC is inflated by front-vs-rear differences)
+    and the Brier skill vs the hour-of-day rate."""
+    by = list(by)
+    pooled = summarize(preds, by)
+    per_oblast = summarize(preds, by + ["region"])
+    macro = per_oblast.groupby(by + ["model"])["roc_auc"].mean().rename("roc_auc_mean_per_oblast")
+    out = pooled.merge(macro.reset_index(), on=by + ["model"])
+    ref = out[out.model == "hour-of-day rate"].set_index(by)["brier"]
+    out["brier_skill"] = 1 - out["brier"] / out.set_index(by).index.map(ref).to_numpy()
     return out.drop(columns=["n"])
 
 
 def main() -> None:
     preds = run_all(rerun=True)
     board = leaderboard(preds)
-    print(board[board.h == 3].sort_values(["window", "brier"]).round(4).to_string(index=False))
+    print(board[(board.h == 3) & (board.window == "expanding")].sort_values(["set", "brier"]).round(4)
+          .to_string(index=False))
 
 
 if __name__ == "__main__":

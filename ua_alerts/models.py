@@ -170,13 +170,17 @@ class ETSRate:
 class LogisticAR:
     """Logistic autoregression: lagged own state, regional state, hour of day and oblast."""
     name = "logistic AR"
+    default_params = {"C": 1.0}
+
+    def __init__(self, **params):
+        self.params = {**self.default_params, **params}
 
     def fit(self, train, h):
         pre = ColumnTransformer([
             ("num", StandardScaler(), NUMERIC),
             ("cat", OneHotEncoder(handle_unknown="ignore"), ["hour", "region_id"]),
         ])
-        self.model = make_pipeline(pre, LogisticRegression(C=1.0, max_iter=3000))
+        self.model = make_pipeline(pre, LogisticRegression(C=self.params["C"], max_iter=3000))
         self.model.fit(train[FEATURES], train[f"y_{h}"])
         return self
 
@@ -184,14 +188,19 @@ class LogisticAR:
         return self.model.predict_proba(test[FEATURES])[:, 1]
 
 
-# Both boosters get comparable, fixed hyperparameters chosen before looking at test results.
+# Boosters: default_params are the pre-registered settings; tuned values come from ua_alerts.tuning
+# (time-based search on the validation folds) and override them.
 class LightGBM:
     name = "LightGBM"
+    default_params = {"n_estimators": 400, "learning_rate": 0.03, "num_leaves": 31, "min_child_samples": 200}
+
+    def __init__(self, **params):
+        self.params = {**self.default_params, **params}
 
     def fit(self, train, h):
         self.model = lgb.LGBMClassifier(
-            n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=200,
-            subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_lambda=1.0, verbose=-1, random_state=0,
+            **self.params, subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_lambda=1.0,
+            verbose=-1, random_state=0,
         )
         self.model.fit(train[FEATURES], train[f"y_{h}"], categorical_feature=["region_id"])
         return self
@@ -202,12 +211,15 @@ class LightGBM:
 
 class XGBoost:
     name = "XGBoost"
+    default_params = {"n_estimators": 400, "learning_rate": 0.03, "max_depth": 6, "min_child_weight": 20}
+
+    def __init__(self, **params):
+        self.params = {**self.default_params, **params}
 
     def fit(self, train, h):
         self.model = xgb.XGBClassifier(
-            n_estimators=400, learning_rate=0.03, max_depth=6, min_child_weight=20,
-            subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0, tree_method="hist", enable_categorical=True,
-            random_state=0, n_jobs=-1,
+            **self.params, subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0, tree_method="hist",
+            enable_categorical=True, random_state=0, n_jobs=-1,
         )
         self.model.fit(train[FEATURES], train[f"y_{h}"])
         return self
@@ -216,8 +228,11 @@ class XGBoost:
         return self.model.predict_proba(test[FEATURES])[:, 1]
 
 
-def all_models(indicator: pd.DataFrame) -> list:
+def all_models(indicator: pd.DataFrame, params: dict | None = None) -> list:
+    """All forecasters; params = {model name: hyperparameters} (e.g. tuned values) overrides the defaults."""
+    params = params or {}
     cache = ETSCache(indicator)
     return [Persistence(), HourOfDayRate(),
             *[ETSRate(cache, s) for s in ETS_SPECS], ETSRate(cache, "auto"),
-            LogisticAR(), LightGBM(), XGBoost()]
+            LogisticAR(**params.get("logistic AR", {})), LightGBM(**params.get("LightGBM", {})),
+            XGBoost(**params.get("XGBoost", {}))]
