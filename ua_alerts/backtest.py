@@ -23,11 +23,11 @@ WINDOWS = {"expanding": None, "sliding": config.SLIDING_TRAIN_DAYS}
 
 
 def folds(fold_set: str = "test", end: pd.Timestamp | None = None) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """[start, end) of each fold in UTC. end: end of the data for the test folds (default: the regime end)."""
+    """[start, end) of each fold in UTC. end: end of the test period (default: config.TEST_END)."""
     if fold_set == "validation":
         kyiv = lambda d: pd.Timestamp(d, tz=config.LOCAL_TZ).tz_convert("UTC")
         return [(kyiv(a), kyiv(b)) for a, b in config.VALIDATION_FOLDS]
-    end = end if end is not None else data.regime_end()
+    end = end if end is not None else data.test_end()
     edges = pd.date_range(end - pd.Timedelta(days=config.TEST_DAYS), end, periods=config.N_FOLDS + 1)
     return list(zip(edges[:-1], edges[1:]))
 

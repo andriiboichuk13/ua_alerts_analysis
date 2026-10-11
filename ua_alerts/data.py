@@ -46,6 +46,10 @@ def regime_end() -> pd.Timestamp:
     return pd.Timestamp(config.REGIME_END).tz_convert("UTC")
 
 
+def test_end() -> pd.Timestamp:
+    return pd.Timestamp(config.TEST_END).tz_convert("UTC")
+
+
 def data_cutoff(df: pd.DataFrame) -> pd.Timestamp:
     """Last full hour we can trust: alerts still running at download time are not in the file."""
     return df["started_at"].max().floor("h")

@@ -7,30 +7,33 @@ at some point within the next **1, 3 or 6 hours**, using only information availa
 
 ## Results (in short)
 
-Evaluated on the **last 5 weeks before 4 Sep 2026** (held-out test set, 4 rolling folds), after tuning on 4 validation folds
-spread over Feb–Jun 2026. Brier skill is measured against a per-oblast hour-of-day baseline (higher is better).
+Evaluated on the **last 5 weeks of reliable official data, 20 Jul – 24 Aug 2026** (held-out test set, 4 rolling folds), after tuning
+and model selection on 4 validation folds spread over Feb–Jun 2026. Brier skill is measured against a per-oblast hour-of-day baseline
+(higher is better).
 
-| h = 3 h | all hours | **quiet hours only** (will a *new* alert start?) |
+| XGBoost, h = 3 h | all hours | **quiet hours only** (will a *new* alert start?) |
 |---|---|---|
-| XGBoost — Brier skill, test | 0.36 | **0.19** |
-| XGBoost — Brier skill, validation | 0.28 | **0.09** |
-| XGBoost — mean per-oblast ROC AUC, test / validation | 0.83 / 0.83 | **0.76 / 0.72** |
+| Brier skill, test / validation | 0.24 / 0.28 | **0.03 / 0.09** |
+| mean per-oblast ROC AUC, test / validation | 0.77 / 0.83 | **0.64 / 0.72** (hour-of-day rate ≈ 0.51) |
 
-* **Final model: XGBoost** (expanding training window, tuned). LightGBM is equivalent; a logistic autoregression is a close,
-  interpretable runner-up and the best model in the quiet western oblasts. All of them clearly beat the baselines and the ETS family,
-  with the same ranking on the validation and the test folds.
-* **Most of the headline skill comes from predicting that a running alert continues** (if an alert is active now, the target is 1 in
-  99.9 % of cases). For new alerts the model gives a useful but limited early warning — mainly from alerts already running in other oblasts.
+* **Final model: XGBoost** (expanding training window, tuned and selected on the validation folds). LightGBM and a logistic
+  autoregression are equivalent within noise; all three clearly beat the baselines and the ETS family, with the same ranking on the
+  validation and the test folds. The logistic AR is the best model in the quiet western oblasts.
+* **Almost all of the headline skill comes from predicting that a running alert continues** (if an alert is active now, the target is 1
+  in 99.8 % of cases). For new alerts the models rank hours clearly better than the clock, but the probability improvement is small:
+  early warning from the alert history alone is weak.
 * **Text data did not help.** All Air Force Telegram posts (Oct 2025 – Sep 2026, ~31 000 messages: drone tracks, launches,
-  aircraft take-offs) were scraped and tested as features, with the feature set chosen on validation folds only. They did not
-  improve the forecasts — the information is largely already in the regional alert state, and the channel's activity doubled over
-  the year. Aircraft take-off warnings can give hours of lead time but occur only a handful of times; MiG-31K take-offs coincide with the alert.
+  aircraft take-offs) were scraped and tested as features, with the feature set chosen on validation folds only. The forecasts did not
+  change meaningfully (≤ 0.0006 Brier) — the information is largely already in the regional alert state, and the channel's activity doubled
+  over the year. Aircraft take-off warnings can give hours of lead time but occur only a handful of times; MiG-31K take-offs coincide with the alert.
+* **Why the test ends on 24 Aug:** the official feed was already missing alerts in its last two weeks (see "Data"). The first version
+  tested up to 3 Sep, and that incomplete period inflated every score (3-h skill 0.36 instead of 0.24, quiet-hour skill 0.19 instead of 0.03).
 * Seasonality is weak: the daily cycle is large in relative terms in the rear (up to 7× between night and day) but explains only a few
   percent of the variance; no weekly or monthly seasonality was found.
 
 ## Second track: up-to-date forecasts for Kyiv, Lviv and Odesa
 
-The main track has to stop on 4 Sep 2026. A second track (`notebooks/city_track.ipynb`, `ua_alerts/city_track.py`) continues **until
+The main track cannot go beyond early September 2026 (its evaluation ends on 24 Aug). A second track (`notebooks/city_track.ipynb`, `ua_alerts/city_track.py`) continues **until
 today** for cities whose official Telegram channels post every alert and all-clear: Kyiv (`@kyivcityofficial`), Lviv (`@dczloda`, Lvivskyi
 raion) and Odesa (`@odesacityofficial`, Odeskyi raion). The messages are parsed into alert intervals and **validated against the official data**
 while it exists (recall 0.98–1.00, ≥ 98 % of alert starts matched within 15 min). Same features, models and backtest; the test period
@@ -46,7 +49,7 @@ while it exists (recall 0.98–1.00, ≥ 98 % of alert starts matched within 15 
   main track (per-city ROC AUC on quiet hours 0.56–0.69): three cities give a much poorer "regional view" than 24 oblasts.
 * The channels revealed that the **official feed was already incomplete in its last ~2 weeks** (see below).
 
-## Data — and why the evaluation stops on 4 September 2026
+## Data — and why the evaluation stops before September 2026
 
 Source: [Vadimkin/ukrainian-air-raid-sirens-dataset](https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset) (MIT),
 snapshot from 2026-10-10 committed in `data/raw/`. Finding a reliable, *current* source was the hardest part of the project:
@@ -59,13 +62,13 @@ snapshot from 2026-10-10 committed in `data/raw/`. Finding a reliable, *current*
 * Other sources were checked and rejected: APIs fed by the same stopped channel, regional administration channels (alerts are posted
   only for Lviv and Kyiv, not for the front line), alerts.in.ua (history only with a manually reviewed API token).
 * On **4 Sep 2026** Ukraine introduced a two-level (yellow / red) alert system, so alerts after that date mean something different anyway.
-* **Caveat found later (city track):** in its last ~2 weeks the official feed was already **missing alerts** — Kyiv alerts posted by the
+* **Found later via the city track:** in its last ~2 weeks the official feed was already **missing alerts** — Kyiv alerts posted by the
   city administration and confirmed by the volunteer data are absent, and nationally the official feed records fewer alert starts while the
-  volunteer data records more (volunteer/official ratio 0.29–0.35 all summer, then 0.40 / 0.44 / 0.60). The labels of the main track's last
-  test fold (26 Aug – 3 Sep) are therefore probably incomplete.
+  volunteer data records more (volunteer/official ratio 0.29–0.35 all summer, then 0.40 / 0.44 / 0.60). The main-track **test period
+  therefore ends on 24 Aug 2026**; this decision rests on the data-quality evidence, not on model scores.
 
-**Decision:** use the official data from **1 Nov 2025** (raion-level alerting) to **4 Sep 2026 00:00 Kyiv** — the latest period in which
-reliable data exists and "alert" has a stable meaning. An oblast counts as under alert if any oblast- or raion-level alert is active in it.
+**Decision:** use the official data from **1 Nov 2025** (raion-level alerting); evaluate on the period up to **24 Aug 2026** — the latest
+period in which reliable data exists and "alert" has a stable meaning. An oblast counts as under alert if any oblast- or raion-level alert is active in it.
 
 ## Method
 
@@ -107,7 +110,7 @@ uv run python -m ua_alerts.text_experiment  # text-feature selection on validati
 uv run python -m ua_alerts.telegram kpszsu --from-id 45500 --to-id 76500   # re-scrape Air Force posts
 uv run python -m ua_alerts.telegram kyivcityofficial --from-id 15500 --to-id <latest id>   # city channels (also dczloda, odesacityofficial)
 uv run python -m ua_alerts.city_track     # city track: validation, backtest, latest forecast
-uv run python -m ua_alerts.predict        # final forecast at 2026-09-04 00:00 Kyiv
+uv run python -m ua_alerts.predict        # main-track forecast at the end of reliable data, 2026-08-24 00:00 Kyiv
 uv run python -m ua_alerts.predict --at "2026-08-20 03:00"   # forecast for any hour in the modelling window
 ```
 
@@ -116,7 +119,7 @@ The notebooks run end to end from `notebooks/` (`uv run jupyter notebook`); `mod
 
 ## Limitations and next steps
 
-* The test period ends on 4 Sep 2026; under the yellow/red system the model would have to be re-trained on new data.
+* The main-track test period ends on 24 Aug 2026; under the yellow/red system the model would have to be re-trained on new data.
 * The model predicts the *official alert*, not the threat itself. Results for the western oblasts rest on very few alerts.
 * Early warning of **new** alerts is limited. Text mention counts were not enough; a next step would be to model drone *routes*
   (direction, speed, distance to each oblast) from the Air Force posts and to normalise for the channel's changing activity.

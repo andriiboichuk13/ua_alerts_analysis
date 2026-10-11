@@ -26,6 +26,10 @@ OFFICIAL_LEVELS = ["oblast", "raion"]
 # system (CabMin resolution No. 1092) took effect on 4 Sep 2026 (00:00 Kyiv = 3 Sep 21:00 UTC).
 REGIME_START = "2025-11-01 00:00+02:00"
 REGIME_END = "2026-09-04 00:00+03:00"
+# End of the main-track test period. The official feed was already missing alerts in its last ~2 weeks (alerts confirmed
+# by the Kyiv city channel and the volunteer data are absent; national official starts drop while volunteer starts rise,
+# see notebooks/city_track.ipynb), so the test period ends before that.
+TEST_END = "2026-08-24 00:00+03:00"
 
 # Forecasting setup: horizons in hours; rolling-origin backtest over the last TEST_DAYS before REGIME_END.
 HORIZONS = [1, 3, 6]

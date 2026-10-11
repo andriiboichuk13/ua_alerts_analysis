@@ -4,7 +4,7 @@ The model (XGBoost, tuned hyperparameters) is fitted on all rows whose target wi
 so nothing after the forecast time is used. Luhansk oblast and Crimea are permanent alerts (probability 1).
 
 Run:
-  uv run python -m ua_alerts.predict                         # latest possible forecast: 2026-09-04 00:00 Kyiv
+  uv run python -m ua_alerts.predict                         # latest reliable forecast: 2026-08-24 00:00 Kyiv
   uv run python -m ua_alerts.predict --at "2026-08-20 03:00" # any full hour (Kyiv time) inside the modelling window
 """
 import argparse
@@ -21,8 +21,9 @@ def forecast(at: str | None = None, panel: pd.DataFrame | None = None, feature_l
     if panel is None:
         panel, _ = backtest.load_inputs()
     times = panel.index.get_level_values("time")
-    if at is None:
-        t = times.max()                                     # last observed hour; forecast time T = t + 1 h
+    if at is None:                                          # end of reliable data (main track: config.TEST_END)
+        end = data.test_end() if permanent else times.max() + pd.Timedelta(hours=1)
+        t = min(times.max(), end - pd.Timedelta(hours=1))   # forecast time T = t + 1 h
     else:
         t = pd.Timestamp(at, tz=config.LOCAL_TZ).tz_convert("UTC") - pd.Timedelta(hours=1)
         if not (pd.Timestamp(config.REGIME_START) <= t <= times.max()):
